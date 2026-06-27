@@ -1,12 +1,15 @@
 import {
+  ArrowLeft,
   Archive,
   BookOpen,
   ChevronRight,
   CloudUpload,
   FileDown,
+  FileText,
   Grid2X2,
   Package,
   PieChart,
+  Pencil,
   Plus,
   RotateCw,
   Save,
@@ -546,6 +549,8 @@ export function App() {
   const [ingredientDraft, setIngredientDraft] = useState({ name: "", supplier: "岡山FS", purchaseAmount: 1000, purchaseUnit: "g", price: 0, yieldRate: 1, memo: "" });
   const [productDraft, setProductDraft] = useState(BLANK_RECIPE_DRAFT);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [editTarget, setEditTarget] = useState(null);
+  const [detailTarget, setDetailTarget] = useState(null);
   const importRef = useRef(null);
   const csvImportRef = useRef(null);
 
@@ -577,6 +582,87 @@ export function App() {
       ...current,
       parts: current.parts.map((item) => (item.id === id ? { ...item, [field]: numeric ? numberValue(value) : value } : item)),
     }));
+  };
+
+  const openEdit = (type, item) => {
+    setEditTarget({ type, ...item });
+  };
+
+  const updateEditTarget = (field, value) => {
+    setEditTarget((current) => (current ? { ...current, [field]: value } : current));
+  };
+
+  const saveEditTarget = () => {
+    if (!editTarget || !editTarget.name?.trim()) return;
+    if (editTarget.type === "product") {
+      save((current) => ({
+        ...current,
+        products: current.products.map((item) =>
+          item.id === editTarget.id
+            ? {
+                ...item,
+                name: editTarget.name.trim(),
+                salePrice: numberValue(editTarget.salePrice),
+                servings: Math.max(numberValue(editTarget.servings), 1),
+                memo: editTarget.memo || "",
+              }
+            : item
+        ),
+      }));
+    }
+    if (editTarget.type === "part") {
+      save((current) => ({
+        ...current,
+        parts: current.parts.map((item) =>
+          item.id === editTarget.id
+            ? {
+                ...item,
+                name: editTarget.name.trim(),
+                batchAmount: numberValue(editTarget.batchAmount),
+                batchUnit: editTarget.batchUnit || "人前",
+                servings: Math.max(numberValue(editTarget.servings), 1),
+                memo: editTarget.memo || "",
+              }
+            : item
+        ),
+      }));
+    }
+    if (editTarget.type === "ingredient") {
+      save((current) => ({
+        ...current,
+        ingredients: current.ingredients.map((item) =>
+          item.id === editTarget.id
+            ? {
+                ...item,
+                name: editTarget.name.trim(),
+                supplier: editTarget.supplier || "その他",
+                purchaseAmount: numberValue(editTarget.purchaseAmount),
+                purchaseUnit: editTarget.purchaseUnit || "g",
+                price: numberValue(editTarget.price),
+                yieldRate: numberValue(editTarget.yieldRate),
+                memo: editTarget.memo || "",
+              }
+            : item
+        ),
+      }));
+    }
+    setEditTarget(null);
+  };
+
+  const updateRecipeSteps = (target, steps) => {
+    if (!target) return;
+    save((current) => {
+      if (target.type === "product") {
+        return {
+          ...current,
+          products: current.products.map((item) => (item.id === target.id ? { ...item, steps } : item)),
+        };
+      }
+      return {
+        ...current,
+        parts: current.parts.map((item) => (item.id === target.id ? { ...item, steps } : item)),
+      };
+    });
   };
 
   const addIngredient = () => {
@@ -767,6 +853,12 @@ export function App() {
     .sort((a, b) => a.name.localeCompare(b.name, "ja"));
 
   const productInfoRows = [...model.productRows].sort((a, b) => b.costRate - a.costRate);
+  const detailItem =
+    detailTarget?.type === "product"
+      ? data.products.find((item) => item.id === detailTarget.id)
+      : detailTarget?.type === "part"
+        ? data.parts.find((item) => item.id === detailTarget.id)
+        : null;
 
   const activeOwnerOptions = lineTarget.ownerType === "product" ? data.products : data.parts;
   const resolvedItemType = lineTarget.ownerType === "part" ? "ingredient" : lineTarget.itemType;
@@ -993,26 +1085,32 @@ export function App() {
                       <h3>{row.name}</h3>
                       <p>{row.id} / {row.servings}人前</p>
                     </div>
-                    <button
-                      className="icon-danger-button"
-                      type="button"
-                      onClick={() => requestDelete({
-                        type: "product",
-                        id: row.id,
-                        name: row.name,
-                        label: "販売レシピ",
-                        detail: `この販売レシピと、レシピ内の${row.lines.length}件の明細を削除します。`,
-                      })}
-                      aria-label={`${row.name}を削除`}
-                    >
-                      <Trash2 size={16} />
-                      <span>削除</span>
-                    </button>
+                    <div className="card-actions">
+                      <button className="icon-action-button" type="button" onClick={() => openEdit("product", row)} aria-label={`${row.name}を編集`}>
+                        <Pencil size={15} />
+                        <span>編集</span>
+                      </button>
+                      <button className="icon-action-button" type="button" onClick={() => setDetailTarget({ type: "product", id: row.id })} aria-label={`${row.name}の詳細`}>
+                        <FileText size={15} />
+                        <span>詳細</span>
+                      </button>
+                      <button
+                        className="icon-danger-button"
+                        type="button"
+                        onClick={() => requestDelete({
+                          type: "product",
+                          id: row.id,
+                          name: row.name,
+                          label: "販売レシピ",
+                          detail: `この販売レシピと、レシピ内の${row.lines.length}件の明細を削除します。`,
+                        })}
+                        aria-label={`${row.name}を削除`}
+                      >
+                        <Trash2 size={16} />
+                        <span>削除</span>
+                      </button>
+                    </div>
                   </div>
-                  <button className="inline-add-button" type="button" onClick={() => preparePartIngredientLine(part.id)}>
-                    <Plus size={16} />
-                    <span>この仕込みに食材追加</span>
-                  </button>
                   <div className="metric-strip">
                     <span><small>1人前原価</small>{yen(row.costPerServing)}</span>
                     <span><small>原価率</small>{pct(row.costRate)}</span>
@@ -1064,26 +1162,40 @@ export function App() {
                       <h3>{part.name}</h3>
                       <p>{part.id} / {part.servings}人前</p>
                     </div>
-                    <button
-                      className="icon-danger-button"
-                      type="button"
-                      onClick={() => {
-                        const ownedCount = part.lines.length;
-                        const usedCount = data.lines.filter((line) => line.itemType === "part" && line.itemId === part.id).length;
-                        requestDelete({
-                          type: "part",
-                          id: part.id,
-                          name: part.name,
-                          label: "仕込みレシピ",
-                          detail: `この仕込みレシピと、レシピ内の${ownedCount}件の明細を削除します。他のレシピ内で使われている${usedCount}件の明細は残ります。`,
-                        });
-                      }}
-                      aria-label={`${part.name}を削除`}
-                    >
-                      <Trash2 size={16} />
-                      <span>削除</span>
-                    </button>
+                    <div className="card-actions">
+                      <button className="icon-action-button" type="button" onClick={() => openEdit("part", part)} aria-label={`${part.name}を編集`}>
+                        <Pencil size={15} />
+                        <span>編集</span>
+                      </button>
+                      <button className="icon-action-button" type="button" onClick={() => setDetailTarget({ type: "part", id: part.id })} aria-label={`${part.name}の詳細`}>
+                        <FileText size={15} />
+                        <span>詳細</span>
+                      </button>
+                      <button
+                        className="icon-danger-button"
+                        type="button"
+                        onClick={() => {
+                          const ownedCount = part.lines.length;
+                          const usedCount = data.lines.filter((line) => line.itemType === "part" && line.itemId === part.id).length;
+                          requestDelete({
+                            type: "part",
+                            id: part.id,
+                            name: part.name,
+                            label: "仕込みレシピ",
+                            detail: `この仕込みレシピと、レシピ内の${ownedCount}件の明細を削除します。他のレシピ内で使われている${usedCount}件の明細は残ります。`,
+                          });
+                        }}
+                        aria-label={`${part.name}を削除`}
+                      >
+                        <Trash2 size={16} />
+                        <span>削除</span>
+                      </button>
+                    </div>
                   </div>
+                  <button className="inline-add-button" type="button" onClick={() => preparePartIngredientLine(part.id)}>
+                    <Plus size={16} />
+                    <span>この仕込みに食材追加</span>
+                  </button>
                   <div className="metric-strip">
                     <span><small>合計原価</small>{yen(part.totalCost)}</span>
                     <span><small>1人前原価</small>{yen(part.servingCost)}</span>
@@ -1180,24 +1292,35 @@ export function App() {
                         <input type="number" min="0" step="0.01" value={item.yieldRate} onChange={(event) => updateIngredient(item.id, "yieldRate", event.target.value)} />
                       </div>
                       <b>{yen(effectiveUnitPrice(item))}/{item.purchaseUnit}</b>
-                      <button
-                        className="icon-danger-button compact"
-                        type="button"
-                        onClick={() => {
-                          const usedCount = data.lines.filter((line) => line.itemType === "ingredient" && line.itemId === item.id).length;
-                          requestDelete({
-                            type: "ingredient",
-                          id: item.id,
-                          name: item.name,
-                          label: "食材",
-                          detail: `この食材マスタだけを削除します。この食材を使っている${usedCount}件の明細は残ります。`,
-                        });
-                      }}
-                        aria-label={`${item.name}を削除`}
-                        title="削除"
-                      >
-                        <Trash2 size={16} />
-                      </button>
+                      <div className="ingredient-actions">
+                        <button
+                          className="icon-action-button compact"
+                          type="button"
+                          onClick={() => openEdit("ingredient", item)}
+                          aria-label={`${item.name}を編集`}
+                          title="編集"
+                        >
+                          <Pencil size={15} />
+                        </button>
+                        <button
+                          className="icon-danger-button compact"
+                          type="button"
+                          onClick={() => {
+                            const usedCount = data.lines.filter((line) => line.itemType === "ingredient" && line.itemId === item.id).length;
+                            requestDelete({
+                              type: "ingredient",
+                            id: item.id,
+                            name: item.name,
+                            label: "食材",
+                            detail: `この食材マスタだけを削除します。この食材を使っている${usedCount}件の明細は残ります。`,
+                          });
+                        }}
+                          aria-label={`${item.name}を削除`}
+                          title="削除"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
                     </article>
                   ))}
                 </section>
@@ -1253,6 +1376,127 @@ export function App() {
                 サンプルへ戻す
               </button>
             </section>
+          </section>
+        )}
+
+        {editTarget && (
+          <div className="confirm-backdrop" role="presentation">
+            <section className="edit-dialog" role="dialog" aria-modal="true" aria-labelledby="edit-dialog-title">
+              <h2 id="edit-dialog-title">
+                {editTarget.type === "product" && "販売レシピを編集"}
+                {editTarget.type === "part" && "仕込みレシピを編集"}
+                {editTarget.type === "ingredient" && "食材を編集"}
+              </h2>
+              <div className="form-grid edit-form-grid">
+                <Field label={editTarget.type === "ingredient" ? "食材名" : "レシピ名"}>
+                  <input value={editTarget.name || ""} onChange={(event) => updateEditTarget("name", event.target.value)} />
+                </Field>
+
+                {editTarget.type === "product" && (
+                  <>
+                    <Field label="売価">
+                      <input type="number" min="0" value={editTarget.salePrice || 0} onChange={(event) => updateEditTarget("salePrice", event.target.value)} />
+                    </Field>
+                    <Field label="何人前">
+                      <input type="number" min="1" value={editTarget.servings || 1} onChange={(event) => updateEditTarget("servings", event.target.value)} />
+                    </Field>
+                  </>
+                )}
+
+                {editTarget.type === "part" && (
+                  <>
+                    <Field label="仕込み量">
+                      <input type="number" min="0" value={editTarget.batchAmount || 0} onChange={(event) => updateEditTarget("batchAmount", event.target.value)} />
+                    </Field>
+                    <Field label="単位">
+                      <input value={editTarget.batchUnit || ""} onChange={(event) => updateEditTarget("batchUnit", event.target.value)} />
+                    </Field>
+                    <Field label="何人前">
+                      <input type="number" min="1" value={editTarget.servings || 1} onChange={(event) => updateEditTarget("servings", event.target.value)} />
+                    </Field>
+                  </>
+                )}
+
+                {editTarget.type === "ingredient" && (
+                  <>
+                    <Field label="仕入先">
+                      <select value={editTarget.supplier || "その他"} onChange={(event) => updateEditTarget("supplier", event.target.value)}>
+                        {SUPPLIERS.map((supplier) => (
+                          <option value={supplier} key={supplier}>{supplier}</option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="購入量">
+                      <input type="number" min="0" value={editTarget.purchaseAmount || 0} onChange={(event) => updateEditTarget("purchaseAmount", event.target.value)} />
+                    </Field>
+                    <Field label="単位">
+                      <input value={editTarget.purchaseUnit || ""} onChange={(event) => updateEditTarget("purchaseUnit", event.target.value)} />
+                    </Field>
+                    <Field label="購入価格">
+                      <input type="number" min="0" value={editTarget.price || 0} onChange={(event) => updateEditTarget("price", event.target.value)} />
+                    </Field>
+                    <Field label="歩留まり">
+                      <input type="number" min="0" step="0.01" value={editTarget.yieldRate || 0} onChange={(event) => updateEditTarget("yieldRate", event.target.value)} />
+                    </Field>
+                  </>
+                )}
+
+                <Field label="メモ">
+                  <textarea value={editTarget.memo || ""} onChange={(event) => updateEditTarget("memo", event.target.value)} rows={4} />
+                </Field>
+              </div>
+              <div className="confirm-actions">
+                <button className="secondary-button inline" type="button" onClick={() => setEditTarget(null)}>
+                  キャンセル
+                </button>
+                <button className="primary-button inline" type="button" onClick={saveEditTarget}>
+                  保存
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
+
+        {detailItem && (
+          <section className="detail-overlay" role="dialog" aria-modal="true" aria-labelledby="detail-title">
+            <header className="detail-header">
+              <button className="back-button" type="button" onClick={() => setDetailTarget(null)}>
+                <ArrowLeft size={20} />
+                <span>戻る</span>
+              </button>
+              <div>
+                <span>{detailTarget.type === "product" ? "販売レシピ詳細" : "仕込みレシピ詳細"}</span>
+                <h2 id="detail-title">{detailItem.name}</h2>
+                <p>{detailItem.id}</p>
+              </div>
+            </header>
+            <div className="detail-body">
+              <div className="detail-summary">
+                <span>
+                  <small>何人前</small>
+                  <b>{detailItem.servings || 1}</b>
+                </span>
+                {detailTarget.type === "product" ? (
+                  <span>
+                    <small>売価</small>
+                    <b>{yen(detailItem.salePrice)}</b>
+                  </span>
+                ) : (
+                  <span>
+                    <small>仕込み量</small>
+                    <b>{detailItem.batchAmount}{detailItem.batchUnit}</b>
+                  </span>
+                )}
+              </div>
+              <Field label="手順">
+                <textarea
+                  className="steps-textarea"
+                  value={detailItem.steps || ""}
+                  onChange={(event) => updateRecipeSteps(detailTarget, event.target.value)}
+                  placeholder={"例:\n1. 食材を計量する\n2. 下処理する\n3. 加熱・冷却・保存の手順を書く"}
+                />
+              </Field>
+            </div>
           </section>
         )}
 
