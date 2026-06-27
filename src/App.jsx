@@ -12,6 +12,7 @@ import {
   Save,
   Search,
   ShoppingBasket,
+  Trash2,
   TrendingUp,
 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
@@ -102,6 +103,11 @@ function pct(value) {
   return `${(value * 100).toFixed(1)}%`;
 }
 
+function qtyText(value) {
+  const safe = Number.isFinite(value) ? value : 0;
+  return Number.isInteger(safe) ? String(safe) : String(Number(safe.toFixed(2)));
+}
+
 function dateTimeText(value) {
   if (!value || value === "未作成" || value === "未出力") return value || "未作成";
   const date = new Date(value);
@@ -142,15 +148,35 @@ function buildModel(data) {
     return amount > 0 ? partTotal(partId) / amount : 0;
   };
 
+  const partServingCost = (partId) => {
+    const part = partMap.get(partId);
+    const servings = Math.max(numberValue(part?.servings), 1);
+    return partTotal(partId) / servings;
+  };
+
   const lineName = (line) => {
     if (line.itemType === "part") return partMap.get(line.itemId)?.name || "未登録レシピ";
     return ingredientMap.get(line.itemId)?.name || "未登録食材";
   };
 
   const lineCost = (line) => {
-    if (line.itemType === "part") return numberValue(line.qty) * partUnitCost(line.itemId);
+    if (line.itemType === "part") return lineServingQty(line) * partServingCost(line.itemId);
     return numberValue(line.qty) * effectiveUnitPrice(ingredientMap.get(line.itemId) || {});
   };
+
+  const lineServingQty = (line) => {
+    if (line.itemType !== "part") return numberValue(line.qty);
+    if (line.unit === "人前") return numberValue(line.qty);
+    const part = partMap.get(line.itemId);
+    const servings = Math.max(numberValue(part?.servings), 1);
+    const amountPerServing = numberValue(part?.batchAmount) / servings;
+    if (amountPerServing > 0 && line.unit === part?.batchUnit) {
+      return numberValue(line.qty) / amountPerServing;
+    }
+    return numberValue(line.qty);
+  };
+
+  const lineUnitLabel = (line) => (line.itemType === "part" ? "人前" : line.unit);
 
   const productRows = data.products.map((product) => {
     const productLines = data.lines.filter((line) => line.ownerType === "product" && line.ownerId === product.id);
@@ -177,6 +203,7 @@ function buildModel(data) {
     ...part,
     totalCost: partTotal(part.id),
     unitCost: partUnitCost(part.id),
+    servingCost: partServingCost(part.id),
     lines: data.lines.filter((line) => line.ownerType === "part" && line.ownerId === part.id),
   }));
 
@@ -198,7 +225,10 @@ function buildModel(data) {
     lineName,
     lineCost,
     partUnitCost,
+    partServingCost,
     partTotal,
+    lineServingQty,
+    lineUnitLabel,
     averageCostRate,
     averageGrossProfitRate,
   };
@@ -284,7 +314,7 @@ function createCsvFiles(data, model) {
           : data.products.find((product) => product.id === line.ownerId);
       const ingredient = line.itemType === "ingredient" ? data.ingredients.find((item) => item.id === line.itemId) : null;
       const part = line.itemType === "part" ? data.parts.find((item) => item.id === line.itemId) : null;
-      const effective = ingredient ? effectiveUnitPrice(ingredient) : model.partUnitCost(part?.id);
+      const effective = ingredient ? effectiveUnitPrice(ingredient) : model.partServingCost(part?.id);
       return [
         line.id,
         line.ownerType === "part" ? "パーツ" : "商品",
@@ -295,8 +325,8 @@ function createCsvFiles(data, model) {
         ingredient?.name || "",
         part?.id || "",
         part?.name || "",
-        line.qty,
-        line.unit,
+        line.itemType === "part" ? qtyText(model.lineServingQty(line)) : line.qty,
+        model.lineUnitLabel(line),
         effective.toFixed(4),
         model.lineCost(line).toFixed(2),
         line.memo,
@@ -512,9 +542,10 @@ export function App() {
   const [data, setData] = useState(loadData);
   const [activeTab, setActiveTab] = useState("dashboard");
   const [searchText, setSearchText] = useState("");
-  const [lineTarget, setLineTarget] = useState({ ownerType: "product", ownerId: "RCP_001", itemType: "part", itemId: "PRT_001", supplier: "岡山FS", qty: 100, unit: "g" });
+  const [lineTarget, setLineTarget] = useState({ ownerType: "product", ownerId: "RCP_001", itemType: "part", itemId: "PRT_001", supplier: "岡山FS", qty: 1, unit: "人前" });
   const [ingredientDraft, setIngredientDraft] = useState({ name: "", supplier: "岡山FS", purchaseAmount: 1000, purchaseUnit: "g", price: 0, yieldRate: 1, memo: "" });
   const [productDraft, setProductDraft] = useState(BLANK_RECIPE_DRAFT);
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const importRef = useRef(null);
   const csvImportRef = useRef(null);
 
@@ -612,24 +643,69 @@ export function App() {
           itemType,
           itemId,
           qty: numberValue(lineTarget.qty),
-          unit: lineTarget.unit || "g",
+          unit: itemType === "part" ? "人前" : lineTarget.unit || "g",
           memo: "",
         },
       ],
     }));
   };
 
-  const removeLine = (id) => {
-    save((current) => ({
-      ...current,
-      lines: current.lines.filter((line) => line.id !== id),
-    }));
+  const requestDelete = (target) => {
+    setDeleteTarget(target);
+  };
+
+  const applyDelete = (current, target) => {
+    if (!target) return current;
+    if (target.type === "ingredient") {
+      return {
+        ...current,
+        ingredients: current.ingredients.filter((item) => item.id !== target.id),
+      };
+    }
+    if (target.type === "product") {
+      return {
+        ...current,
+        products: current.products.filter((item) => item.id !== target.id),
+        lines: current.lines.filter((line) => !(line.ownerType === "product" && line.ownerId === target.id)),
+      };
+    }
+    if (target.type === "part") {
+      return {
+        ...current,
+        parts: current.parts.filter((item) => item.id !== target.id),
+        lines: current.lines.filter((line) => !(line.ownerType === "part" && line.ownerId === target.id)),
+      };
+    }
+    if (target.type === "line") {
+      return {
+        ...current,
+        lines: current.lines.filter((line) => line.id !== target.id),
+      };
+    }
+    return current;
+  };
+
+  const confirmDelete = () => {
+    if (!deleteTarget) return;
+    save((current) => applyDelete(current, deleteTarget));
+    setDeleteTarget(null);
   };
 
   const updateLineQty = (id, value) => {
     save((current) => ({
       ...current,
       lines: current.lines.map((line) => (line.id === id ? { ...line, qty: numberValue(value) } : line)),
+    }));
+  };
+
+  const updateLineUsage = (line, value) => {
+    save((current) => ({
+      ...current,
+      lines: current.lines.map((item) =>
+        item.id === line.id
+          ? { ...item, qty: numberValue(value), unit: line.itemType === "part" ? "人前" : item.unit }
+          : item
+      ),
     }));
   };
 
@@ -701,7 +777,7 @@ export function App() {
     data.ingredients.find((item) => item.supplier === supplier)?.id || data.ingredients[0]?.id || "";
 
   const defaultUnitForItem = (itemType, itemId) => {
-    if (itemType === "part") return data.parts.find((item) => item.id === itemId)?.batchUnit || "人前";
+    if (itemType === "part") return "人前";
     return data.ingredients.find((item) => item.id === itemId)?.purchaseUnit || "g";
   };
 
@@ -712,7 +788,23 @@ export function App() {
       itemType,
       itemId,
       unit: defaultUnitForItem(itemType, itemId),
+      qty: itemType === "part" ? 1 : 100,
     });
+  };
+
+  const preparePartIngredientLine = (partId) => {
+    const supplier = lineTarget.supplier || SUPPLIERS[0];
+    const itemId = firstIngredientForSupplier(supplier);
+    setLineTarget({
+      ownerType: "part",
+      ownerId: partId,
+      itemType: "ingredient",
+      itemId,
+      supplier,
+      qty: 100,
+      unit: defaultUnitForItem("ingredient", itemId),
+    });
+    window.setTimeout(() => document.getElementById("line-editor")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
   };
 
   return (
@@ -803,7 +895,7 @@ export function App() {
               </button>
             </section>
 
-            <section className="panel">
+            <section className="panel" id="line-editor">
               <SectionTitle>明細追加</SectionTitle>
               <div className="form-grid">
                 <Field label="追加先の種類">
@@ -820,6 +912,7 @@ export function App() {
                         itemType: nextItemType,
                         itemId,
                         unit: defaultUnitForItem(nextItemType, itemId),
+                        qty: nextItemType === "part" ? 1 : 100,
                       });
                     }}
                   >
@@ -878,11 +971,11 @@ export function App() {
                     ))}
                   </select>
                 </Field>
-                <Field label="使用量">
+                <Field label={resolvedItemType === "part" ? "使用人前" : "使用量"}>
                   <input type="number" min="0" value={lineTarget.qty} onChange={(event) => setLineTarget({ ...lineTarget, qty: event.target.value })} />
                 </Field>
                 <Field label="単位">
-                  <input value={lineTarget.unit} onChange={(event) => setLineTarget({ ...lineTarget, unit: event.target.value })} />
+                  <input value={resolvedItemType === "part" ? "人前" : lineTarget.unit} onChange={(event) => setLineTarget({ ...lineTarget, unit: event.target.value })} readOnly={resolvedItemType === "part"} />
                 </Field>
               </div>
               <button className="primary-button" type="button" onClick={addLine}>
@@ -900,7 +993,26 @@ export function App() {
                       <h3>{row.name}</h3>
                       <p>{row.id} / {row.servings}人前</p>
                     </div>
+                    <button
+                      className="icon-danger-button"
+                      type="button"
+                      onClick={() => requestDelete({
+                        type: "product",
+                        id: row.id,
+                        name: row.name,
+                        label: "販売レシピ",
+                        detail: `この販売レシピと、レシピ内の${row.lines.length}件の明細を削除します。`,
+                      })}
+                      aria-label={`${row.name}を削除`}
+                    >
+                      <Trash2 size={16} />
+                      <span>削除</span>
+                    </button>
                   </div>
+                  <button className="inline-add-button" type="button" onClick={() => preparePartIngredientLine(part.id)}>
+                    <Plus size={16} />
+                    <span>この仕込みに食材追加</span>
+                  </button>
                   <div className="metric-strip">
                     <span><small>1人前原価</small>{yen(row.costPerServing)}</span>
                     <span><small>原価率</small>{pct(row.costRate)}</span>
@@ -917,11 +1029,25 @@ export function App() {
                   <div className="line-list">
                     {row.lines.map((line) => (
                       <div className="line-row" key={line.id}>
-                        <span>{model.lineName(line)}</span>
-                        <input type="number" min="0" value={line.qty} onChange={(event) => updateLineQty(line.id, event.target.value)} />
-                        <small>{line.unit}</small>
+                        <span className="line-name">
+                          {model.lineName(line)}
+                          {line.itemType === "part" && <small>1人前原価 {yen(model.partServingCost(line.itemId))}</small>}
+                        </span>
+                        <input type="number" min="0" value={line.itemType === "part" ? qtyText(model.lineServingQty(line)) : line.qty} onChange={(event) => updateLineUsage(line, event.target.value)} />
+                        <small>{model.lineUnitLabel(line)}</small>
                         <b>{yen(model.lineCost(line))}</b>
-                        <button type="button" onClick={() => removeLine(line.id)}>削除</button>
+                        <button
+                          type="button"
+                          onClick={() => requestDelete({
+                            type: "line",
+                            id: line.id,
+                            name: model.lineName(line),
+                            label: "明細",
+                            detail: "この明細だけを削除します。",
+                          })}
+                        >
+                          削除
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -932,21 +1058,71 @@ export function App() {
             <section className="part-list">
               <SectionTitle>仕込みレシピ</SectionTitle>
               {filteredParts.map((part) => (
-                <article className="part-card" key={part.id}>
-                  <div>
-                    <strong>{part.name}</strong>
-                    <span>{part.id} / {part.servings}人前</span>
+                <article className="recipe-card part-recipe-card" key={part.id}>
+                  <div className="recipe-card-head">
+                    <div>
+                      <h3>{part.name}</h3>
+                      <p>{part.id} / {part.servings}人前</p>
+                    </div>
+                    <button
+                      className="icon-danger-button"
+                      type="button"
+                      onClick={() => {
+                        const ownedCount = part.lines.length;
+                        const usedCount = data.lines.filter((line) => line.itemType === "part" && line.itemId === part.id).length;
+                        requestDelete({
+                          type: "part",
+                          id: part.id,
+                          name: part.name,
+                          label: "仕込みレシピ",
+                          detail: `この仕込みレシピと、レシピ内の${ownedCount}件の明細を削除します。他のレシピ内で使われている${usedCount}件の明細は残ります。`,
+                        });
+                      }}
+                      aria-label={`${part.name}を削除`}
+                    >
+                      <Trash2 size={16} />
+                      <span>削除</span>
+                    </button>
                   </div>
-                  <Field label="仕込み量">
-                    <input type="number" min="0" value={part.batchAmount} onChange={(event) => updatePart(part.id, "batchAmount", event.target.value)} />
-                  </Field>
-                  <Field label="単位">
-                    <input value={part.batchUnit} onChange={(event) => updatePart(part.id, "batchUnit", event.target.value)} />
-                  </Field>
-                  <Field label="何人前">
-                    <input type="number" min="0" value={part.servings} onChange={(event) => updatePart(part.id, "servings", event.target.value)} />
-                  </Field>
-                  <b>{yen(part.unitCost)} / {part.batchUnit}</b>
+                  <div className="metric-strip">
+                    <span><small>合計原価</small>{yen(part.totalCost)}</span>
+                    <span><small>1人前原価</small>{yen(part.servingCost)}</span>
+                    <span><small>1{part.batchUnit}原価</small>{yen(part.unitCost)}</span>
+                  </div>
+                  <div className="inline-edit part-inline-edit">
+                    <Field label="仕込み量">
+                      <input type="number" min="0" value={part.batchAmount} onChange={(event) => updatePart(part.id, "batchAmount", event.target.value)} />
+                    </Field>
+                    <Field label="単位">
+                      <input value={part.batchUnit} onChange={(event) => updatePart(part.id, "batchUnit", event.target.value)} />
+                    </Field>
+                    <Field label="何人前">
+                      <input type="number" min="1" value={part.servings} onChange={(event) => updatePart(part.id, "servings", event.target.value)} />
+                    </Field>
+                  </div>
+                  <div className="line-list">
+                    {part.lines.length === 0 && <p className="empty-lines">明細追加から使用食材を追加できます。</p>}
+                    {part.lines.map((line) => (
+                      <div className="line-row" key={line.id}>
+                        <span className="line-name">{model.lineName(line)}</span>
+                        <input type="number" min="0" value={line.qty} onChange={(event) => updateLineUsage(line, event.target.value)} />
+                        <small>{line.unit}</small>
+                        <b>{yen(model.lineCost(line))}</b>
+                        <button
+                          type="button"
+                          onClick={() => requestDelete({
+                            type: "line",
+                            id: line.id,
+                            name: model.lineName(line),
+                            label: "明細",
+                            detail: "この明細だけを削除します。",
+                          })}
+                        >
+                          削除
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 </article>
               ))}
             </section>
@@ -1004,6 +1180,24 @@ export function App() {
                         <input type="number" min="0" step="0.01" value={item.yieldRate} onChange={(event) => updateIngredient(item.id, "yieldRate", event.target.value)} />
                       </div>
                       <b>{yen(effectiveUnitPrice(item))}/{item.purchaseUnit}</b>
+                      <button
+                        className="icon-danger-button compact"
+                        type="button"
+                        onClick={() => {
+                          const usedCount = data.lines.filter((line) => line.itemType === "ingredient" && line.itemId === item.id).length;
+                          requestDelete({
+                            type: "ingredient",
+                          id: item.id,
+                          name: item.name,
+                          label: "食材",
+                          detail: `この食材マスタだけを削除します。この食材を使っている${usedCount}件の明細は残ります。`,
+                        });
+                      }}
+                        aria-label={`${item.name}を削除`}
+                        title="削除"
+                      >
+                        <Trash2 size={16} />
+                      </button>
                     </article>
                   ))}
                 </section>
@@ -1060,6 +1254,29 @@ export function App() {
               </button>
             </section>
           </section>
+        )}
+
+        {deleteTarget && (
+          <div className="confirm-backdrop" role="presentation">
+            <section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-dialog-title">
+              <div className="confirm-icon">
+                <Trash2 size={24} />
+              </div>
+              <h2 id="delete-dialog-title">削除しますか？</h2>
+              <p>
+                {deleteTarget.label}「{deleteTarget.name}」を削除します。
+              </p>
+              <p className="confirm-detail">{deleteTarget.detail}</p>
+              <div className="confirm-actions">
+                <button className="secondary-button inline" type="button" onClick={() => setDeleteTarget(null)}>
+                  キャンセル
+                </button>
+                <button className="danger-button inline" type="button" onClick={confirmDelete}>
+                  削除
+                </button>
+              </div>
+            </section>
+          </div>
         )}
 
         <nav className="bottom-nav" aria-label="SEN Mobile navigation">
